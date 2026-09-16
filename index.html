@@ -246,7 +246,7 @@
      (independiente del horario general del grupo). Si se acaba, se entrega solo.
 ------------------------------------------------------------------------------------- */
 const TITULO_EXAMEN = "Examen Bimestral: Cultura Digital I";
-const DURACION_MINUTOS = 50;
+const DURACION_MINUTOS = 45;
 
 /* -------------------------------------------------------------------------------------
    PASO 2. Grupos y horarios de aplicación
@@ -258,7 +258,7 @@ const DURACION_MINUTOS = 50;
    - Lista de grupos: A a E (5 grupos).
 ------------------------------------------------------------------------------------- */
 const HORARIOS_GRUPOS = {
-   "A": { apertura: "2026-09-13T07:00", cierre: "2026-09-16T14:00" },
+  "A": { apertura: "2026-09-13T07:00", cierre: "2026-09-16T14:00" },
   "B": { apertura: "2026-09-13T07:00", cierre: "2026-09-16T14:00" },
   "C": { apertura: "2026-09-13T07:00", cierre: "2026-09-16T14:00" },
   "D": { apertura: "2026-09-13T07:00", cierre: "2026-09-16T14:00" },
@@ -285,7 +285,7 @@ const CODIGO_REINICIO = "AUTORIZADO2026";
    - Si dejas esto vacío (""), el examen sigue funcionando normal, solo que no se
      enviará automáticamente a Google Sheets (el alumno solo descargará su comprobante en PDF).
 ------------------------------------------------------------------------------------- */
-const URL_GOOGLE_SHEETS ="https://script.google.com/macros/s/AKfycbwP3hVEAqPX8GW_CpTKTYUcfXmPM4c57KT9KvJZTJrUja8-XjeQToByE5m1Yimfsbpv/exec";
+const URL_GOOGLE_SHEETS = "https://script.google.com/macros/s/AKfycbwP3hVEAqPX8GW_CpTKTYUcfXmPM4c57KT9KvJZTJrUja8-XjeQToByE5m1Yimfsbpv/exec";
 
 /* -------------------------------------------------------------------------------------
    PASO 5. Umbrales del sistema antifraude
@@ -303,9 +303,9 @@ const URL_GOOGLE_SHEETS ="https://script.google.com/macros/s/AKfycbwP3hVEAqPX8GW
      alumno sobre el examen, para que cualquier imagen que se filtre quede
      identificada.
 ------------------------------------------------------------------------------------- */
-const SEGUNDOS_SALIDA_SIGNIFICATIVA = 2;
+const SEGUNDOS_SALIDA_SIGNIFICATIVA = 3;
 const LIMITE_SALIDAS_SOSPECHOSAS = 3;
-const LIMITE_SEGUNDOS_SOSPECHOSOS = 10;
+const LIMITE_SEGUNDOS_SOSPECHOSOS = 60;
 const USAR_PANTALLA_COMPLETA = true;
 
 /* -------------------------------------------------------------------------------------
@@ -555,6 +555,26 @@ const PANTALLA_COMPLETA_SOPORTADA = !!(document.fullscreenEnabled || document.we
    cualquier evento de "salida" de pantalla completa porque nunca hubo una
    pantalla completa real de la cual salir. */
 let pantallaCompletaFueActivada = false;
+/* Cuando la página está en pantalla completa, el propio navegador sale de
+   pantalla completa automáticamente al mostrar un confirm()/alert() (para
+   poder dibujar el cuadro de diálogo). Eso no es que el alumno haya hecho
+   nada malo, así que cualquier código nuestro que vaya a mostrar un
+   confirm()/alert() debe poner esta bandera en true justo antes y regresarla
+   a false justo después, para que el sistema antifraude ignore esa salida
+   puntual de pantalla completa. */
+let suprimirDeteccionSalidaPantallaCompleta = false;
+
+/* Envuelve cualquier confirm()/alert() del examen con la protección de arriba,
+   para que el sistema antifraude no confunda el propio cuadro de diálogo con
+   una salida real de pantalla completa o de la ventana. */
+function conProteccionDeDialogo(funcion){
+  suprimirDeteccionSalidaPantallaCompleta = true;
+  try{
+    return funcion();
+  } finally {
+    suprimirDeteccionSalidaPantallaCompleta = false;
+  }
+}
 
 document.getElementById("titulo-encabezado").textContent = TITULO_EXAMEN;
 
@@ -1155,8 +1175,16 @@ document.getElementById("btn-entregar").addEventListener("click", ()=>{
       `¿Quieres entregar de todas formas? Si cancelas, puedes usar el panel de números para regresar a completarlas.`;
   }
 
-  if(confirm(mensaje)){
+  const confirmado = conProteccionDeDialogo(()=> confirm(mensaje));
+
+  if(confirmado){
     entregarExamen(false);
+  } else if(USAR_PANTALLA_COMPLETA && PANTALLA_COMPLETA_SOPORTADA && !document.fullscreenElement){
+    // Si canceló y el cuadro de diálogo hizo que el navegador saliera de
+    // pantalla completa, se la volvemos a pedir de inmediato: esto SÍ cuenta
+    // como una acción directa del alumno (el clic en "Cancelar"), así que el
+    // navegador lo permite sin problema.
+    document.documentElement.requestFullscreen().catch(()=>{});
   }
 });
 
@@ -1217,7 +1245,7 @@ function iniciarCronometro(limiteTiempo){
    Se usa una sola bandera ("fueraDeFoco") para no contar dos veces la misma
    salida si ambas señales se disparan para el mismo evento. */
 function marcarSalioDeFoco(){
-  if(!examenActivo || fueraDeFoco) return;
+  if(!examenActivo || fueraDeFoco || suprimirDeteccionSalidaPantallaCompleta) return;
   fueraDeFoco = true;
   horaPerdioFoco = Date.now();
 }
@@ -1244,7 +1272,7 @@ function marcarRegresoDeFoco(){
     // Advertencia visible: se muestra apenas el alumno regresa (mientras estuvo
     // fuera no había forma de mostrarle nada, ya que no estaba viendo la página).
     setTimeout(()=>{
-      alert(`⚠️ Se detectó que saliste de esta pestaña o ventana (salida #${sesionActual.salidas}, ${segundosFuera} segundos fuera).\n\nEsto ha quedado registrado y será revisado por tu profesor.`);
+      conProteccionDeDialogo(()=> alert(`⚠️ Se detectó que saliste de esta pestaña o ventana (salida #${sesionActual.salidas}, ${segundosFuera} segundos fuera).\n\nEsto ha quedado registrado y será revisado por tu profesor.`));
     }, 150);
   }
 }
@@ -1278,7 +1306,7 @@ document.addEventListener("keydown", (evento)=>{
   sesionActual.salidas++;
   registrarEvento(`Combinación de teclas detectada (${combinacion}) — salida #${sesionActual.salidas}.`);
   setTimeout(()=>{
-    alert(`⚠️ Se detectó la combinación de teclas ${combinacion} (salida #${sesionActual.salidas}).\n\nEsto ha quedado registrado y será revisado por tu profesor.`);
+    conProteccionDeDialogo(()=> alert(`⚠️ Se detectó la combinación de teclas ${combinacion} (salida #${sesionActual.salidas}).\n\nEsto ha quedado registrado y será revisado por tu profesor.`));
   }, 150);
 });
 
@@ -1312,6 +1340,11 @@ document.addEventListener("fullscreenchange", ()=>{
   // solo disparó un evento fantasma? Si nunca se activó de verdad, lo ignoramos
   // por completo: no contamos una salida ni bloqueamos al alumno.
   if(!pantallaCompletaFueActivada) return;
+
+  // Esta salida la causó uno de nuestros propios confirm()/alert() (el
+  // navegador sale de pantalla completa solo para poder mostrarlos), no el
+  // alumno. La ignoramos por completo.
+  if(suprimirDeteccionSalidaPantallaCompleta) return;
 
   horaFueraPantallaCompleta = Date.now();
   sesionActual.salidas++;
