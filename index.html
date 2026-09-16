@@ -258,7 +258,7 @@ const DURACION_MINUTOS = 50;
    - Lista de grupos: A a E (5 grupos).
 ------------------------------------------------------------------------------------- */
 const HORARIOS_GRUPOS = {
-  "A": { apertura: "2026-09-13T07:00", cierre: "2026-09-16T14:00" },
+   "A": { apertura: "2026-09-13T07:00", cierre: "2026-09-16T14:00" },
   "B": { apertura: "2026-09-13T07:00", cierre: "2026-09-16T14:00" },
   "C": { apertura: "2026-09-13T07:00", cierre: "2026-09-16T14:00" },
   "D": { apertura: "2026-09-13T07:00", cierre: "2026-09-16T14:00" },
@@ -285,7 +285,7 @@ const CODIGO_REINICIO = "AUTORIZADO2026";
    - Si dejas esto vacío (""), el examen sigue funcionando normal, solo que no se
      enviará automáticamente a Google Sheets (el alumno solo descargará su comprobante en PDF).
 ------------------------------------------------------------------------------------- */
-const URL_GOOGLE_SHEETS = "https://script.google.com/macros/s/AKfycbwP3hVEAqPX8GW_CpTKTYUcfXmPM4c57KT9KvJZTJrUja8-XjeQToByE5m1Yimfsbpv/exec";
+const URL_GOOGLE_SHEETS ="https://script.google.com/macros/s/AKfycbwP3hVEAqPX8GW_CpTKTYUcfXmPM4c57KT9KvJZTJrUja8-XjeQToByE5m1Yimfsbpv/exec";
 
 /* -------------------------------------------------------------------------------------
    PASO 5. Umbrales del sistema antifraude
@@ -536,7 +536,9 @@ const EXAMEN = {
 
 let sesionActual = null;
 let examenActivo = false;
-let horaOculto = null;
+let horaPerdioFoco = null;
+let fueraDeFoco = false;
+let salidaYaContadaPorTecla = false;
 let horaFueraPantallaCompleta = null;
 let intervaloCronometro = null;
 let claveSesionActual = null;
@@ -1202,34 +1204,99 @@ function iniciarCronometro(limiteTiempo){
   intervaloCronometro = setInterval(actualizar, 1000);
 }
 
-/* ---------- sistema antifraude: cambios de pestaña/ventana ---------- */
-document.addEventListener("visibilitychange", ()=>{
-  if(!examenActivo) return;
-  if(document.hidden){
-    horaOculto = Date.now();
-  } else if(horaOculto){
-    const segundosFuera = Math.round((Date.now() - horaOculto)/1000);
-    horaOculto = null;
-    if(segundosFuera >= SEGUNDOS_SALIDA_SIGNIFICATIVA){
-      sesionActual.salidas++;
-      sesionActual.tiempoFueraTotal += segundosFuera;
-      registrarEvento(`Salida de la pestaña #${sesionActual.salidas}: ${segundosFuera} segundos fuera.`);
-      // Advertencia visible: se muestra apenas el alumno regresa (mientras estuvo
-      // fuera no había forma de mostrarle nada, ya que no estaba viendo la página).
-      setTimeout(()=>{
-        alert(`⚠️ Se detectó que saliste de esta pestaña (salida #${sesionActual.salidas}, ${segundosFuera} segundos fuera).\n\nEsto ha quedado registrado y será revisado por tu profesor.`);
-      }, 150);
-    }
+/* ---------- sistema antifraude: cambios de pestaña/ventana ----------
+   Se combinan DOS señales distintas para el mismo hecho (que el alumno dejó
+   de estar viendo el examen), porque ninguna de las dos por sí sola es 100%
+   confiable en todos los sistemas:
+     - "visibilitychange": se dispara cuando la pestaña se oculta (se minimiza,
+       se cambia a otra pestaña, se bloquea la pantalla, etc.)
+     - "blur"/"focus" de la ventana: se dispara cuando la ventana del navegador
+       deja de tener el foco, aunque siga "visible" de fondo. Esto es lo que
+       SIEMPRE ocurre con Alt+Tab (Windows/Linux) o Cmd+Tab (Mac), incluso en
+       sistemas donde "visibilitychange" no alcanza a notarlo.
+   Se usa una sola bandera ("fueraDeFoco") para no contar dos veces la misma
+   salida si ambas señales se disparan para el mismo evento. */
+function marcarSalioDeFoco(){
+  if(!examenActivo || fueraDeFoco) return;
+  fueraDeFoco = true;
+  horaPerdioFoco = Date.now();
+}
+
+function marcarRegresoDeFoco(){
+  if(!examenActivo || !fueraDeFoco) return;
+  fueraDeFoco = false;
+  const segundosFuera = Math.round((Date.now() - horaPerdioFoco)/1000);
+  horaPerdioFoco = null;
+
+  if(salidaYaContadaPorTecla){
+    // Esta salida ya se contó en cuanto se detectó la combinación de teclas
+    // (ver más abajo); aquí solo sumamos cuánto tiempo estuvo fuera.
+    sesionActual.tiempoFueraTotal += segundosFuera;
+    salidaYaContadaPorTecla = false;
+    guardarSesion();
+    return;
   }
+
+  if(segundosFuera >= SEGUNDOS_SALIDA_SIGNIFICATIVA){
+    sesionActual.salidas++;
+    sesionActual.tiempoFueraTotal += segundosFuera;
+    registrarEvento(`Salida de la pestaña o ventana #${sesionActual.salidas}: ${segundosFuera} segundos fuera.`);
+    // Advertencia visible: se muestra apenas el alumno regresa (mientras estuvo
+    // fuera no había forma de mostrarle nada, ya que no estaba viendo la página).
+    setTimeout(()=>{
+      alert(`⚠️ Se detectó que saliste de esta pestaña o ventana (salida #${sesionActual.salidas}, ${segundosFuera} segundos fuera).\n\nEsto ha quedado registrado y será revisado por tu profesor.`);
+    }, 150);
+  }
+}
+
+document.addEventListener("visibilitychange", ()=>{
+  if(document.hidden) marcarSalioDeFoco();
+  else marcarRegresoDeFoco();
+});
+window.addEventListener("blur", marcarSalioDeFoco);
+window.addEventListener("focus", marcarRegresoDeFoco);
+
+/* ---------- sistema antifraude: intento de capturar Alt+Tab / Cmd+Tab ----------
+   AVISO IMPORTANTE: Alt+Tab y Cmd+Tab son atajos que controla el sistema
+   operativo (Windows/macOS), no el navegador. El sistema operativo intercepta
+   esa combinación ANTES de que le llegue a esta página, así que este bloque
+   es un "mejor esfuerzo": funciona en algunos navegadores/sistemas si alcanzan
+   a entregar el evento antes de cambiar de ventana, pero NO hay forma de
+   garantizarlo al 100% desde una página web — ninguna página, de ningún
+   examen ni banco, puede hacerlo. La protección confiable de verdad sigue
+   siendo la de arriba (blur/visibilitychange), que detecta el RESULTADO de
+   Alt+Tab (que la ventana pierde el foco) sin importar si se alcanzó a
+   capturar la tecla o no. */
+document.addEventListener("keydown", (evento)=>{
+  if(!examenActivo) return;
+  const esAltTab = evento.altKey && evento.key === "Tab";
+  const esCmdTab = evento.metaKey && evento.key === "Tab";
+  if(!esAltTab && !esCmdTab) return;
+
+  const combinacion = esCmdTab ? "⌘ + Tab" : "Alt + Tab";
+  salidaYaContadaPorTecla = true;
+  sesionActual.salidas++;
+  registrarEvento(`Combinación de teclas detectada (${combinacion}) — salida #${sesionActual.salidas}.`);
+  setTimeout(()=>{
+    alert(`⚠️ Se detectó la combinación de teclas ${combinacion} (salida #${sesionActual.salidas}).\n\nEsto ha quedado registrado y será revisado por tu profesor.`);
+  }, 150);
 });
 
 /* ---------- sistema antifraude: salir de pantalla completa ---------- */
 document.addEventListener("fullscreenchange", ()=>{
+  // Esto se registra SIEMPRE, incluso si el examen aún no se marca como
+  // "activo" (por ejemplo, mientras se está verificando en segundo plano que
+  // el alumno no haya presentado antes desde otro dispositivo). Si no se hace
+  // así, esa confirmación se pierde justo en el momento en que ocurre, y ya
+  // no hay forma de saber después que sí hubo una pantalla completa real de
+  // la cual el alumno pudo haber salido.
+  if(document.fullscreenElement){
+    pantallaCompletaFueActivada = true;
+  }
+
   if(!examenActivo) return;
 
   if(document.fullscreenElement){
-    // Confirmado: el examen SÍ está en pantalla completa en este navegador.
-    pantallaCompletaFueActivada = true;
     if(horaFueraPantallaCompleta){
       const segundosFuera = Math.round((Date.now() - horaFueraPantallaCompleta)/1000);
       sesionActual.tiempoFueraTotal += segundosFuera;
