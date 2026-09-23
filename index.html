@@ -148,6 +148,11 @@
       <label for="campo-nombre">Nombre completo</label>
       <input type="text" id="campo-nombre" placeholder="Ej. Juan Pérez López" required>
 
+      <label for="campo-profesor">Profesor</label>
+      <select id="campo-profesor" required>
+        <option value="">-- Selecciona tu profesor --</option>
+      </select>
+
       <label for="campo-grupo">Grupo</label>
       <select id="campo-grupo" required>
         <option value="">-- Selecciona tu grupo --</option>
@@ -231,8 +236,6 @@
 </div>
 
 <footer>Sistema de examen en línea — generado para uso académico interno.</footer>
-<iframe name="marco-envio-oculto" id="marco-envio-oculto" style="display:none;" title="envio-oculto"></iframe>
-
 <script>
 /* =====================================================================================
    ZONA DE CONFIGURACIÓN — AQUÍ ES DONDE TÚ HACES CAMBIOS
@@ -255,15 +258,23 @@ const DURACION_MINUTOS = 45;
    - Formato de fecha y hora: "AAAA-MM-DDTHH:MM"  (24 horas, hora de tu computadora/servidor)
      Ejemplo: 15 de septiembre de 2026 a las 8:00 am -> "2026-09-15T08:00"
    - Puedes agregar, quitar o renombrar grupos libremente; solo respeta el formato.
-   - Lista de grupos: A a E (5 grupos).
+   - Lista de grupos: A a E (5 grupos). Todos abren el 21 de septiembre a las 7:45 am
+     y cierran el 23 de septiembre a las 9:00 am (la ventana abarca varios días).
 ------------------------------------------------------------------------------------- */
 const HORARIOS_GRUPOS = {
-  "A": { apertura: "2026-09-13T07:00", cierre: "2026-09-16T14:00" },
-  "B": { apertura: "2026-09-13T07:00", cierre: "2026-09-16T14:00" },
-  "C": { apertura: "2026-09-13T07:00", cierre: "2026-09-16T14:00" },
-  "D": { apertura: "2026-09-13T07:00", cierre: "2026-09-16T14:00" },
-  "E": { apertura: "2026-09-13T07:00", cierre: "2026-09-16T14:00" }
+  "A": { apertura: "2026-09-21T07:45", cierre: "2026-09-23T09:00" },
+  "B": { apertura: "2026-09-21T07:45", cierre: "2026-09-23T09:00" },
+  "C": { apertura: "2026-09-21T07:45", cierre: "2026-09-23T09:00" },
+  "D": { apertura: "2026-09-21T07:45", cierre: "2026-09-23T09:00" },
+  "E": { apertura: "2026-09-21T07:45", cierre: "2026-09-23T09:00" }
 };
+
+/* -------------------------------------------------------------------------------------
+   PASO 2b. Profesores
+   - Lista de profesores entre los que el alumno elige antes de entrar. Puedes agregar,
+     quitar o renombrar libremente.
+------------------------------------------------------------------------------------- */
+const PROFESORES = ["Jorge Benítez", "Daniela Araujo", "Daniela Uribe"];
 
 /* -------------------------------------------------------------------------------------
    PASO 3. Código maestro de reinicio
@@ -275,7 +286,7 @@ const HORARIOS_GRUPOS = {
      código solo reinicia el examen EN ESE DISPOSITIVO. Para llevar un control limpio,
      borra también el renglón correspondiente en la hoja de Google Sheets (ver PASO 4).
 ------------------------------------------------------------------------------------- */
-const CODIGO_REINICIO = "AUTORIZADO2026";
+const CODIGO_REINICIO = "CULTURA2026";
 
 /* -------------------------------------------------------------------------------------
    PASO 4. Conexión con Google Sheets
@@ -285,12 +296,14 @@ const CODIGO_REINICIO = "AUTORIZADO2026";
    - Si dejas esto vacío (""), el examen sigue funcionando normal, solo que no se
      enviará automáticamente a Google Sheets (el alumno solo descargará su comprobante en PDF).
 ------------------------------------------------------------------------------------- */
-const URL_GOOGLE_SHEETS = "https://script.google.com/macros/s/AKfycbwP3hVEAqPX8GW_CpTKTYUcfXmPM4c57KT9KvJZTJrUja8-XjeQToByE5m1Yimfsbpv/exec";
+const URL_GOOGLE_SHEETS = "https://script.google.com/macros/s/AKfycbyRcFn_YnqWKaCc1YpDavfbYykRCZR2QYYL0pL-68JKkkEShUSOPIMQsHOfaejEOp0X/exec";
 
 /* -------------------------------------------------------------------------------------
    PASO 5. Umbrales del sistema antifraude
-   - SEGUNDOS_SALIDA_SIGNIFICATIVA: si el alumno sale de la pestaña menos tiempo que
-     este valor, NO se cuenta (para no penalizar parpadeos o notificaciones rápidas).
+   - SEGUNDOS_SALIDA_SIGNIFICATIVA: cuántos segundos debe durar una salida de la
+     pestaña/ventana para contarla. Está en 0: se cuenta CUALQUIER cambio de foco,
+     sin importar cuántos segundos haya durado (así lo pediste). Si más adelante
+     prefieres ignorar parpadeos de una fracción de segundo, súbelo (por ejemplo a 2).
    - LIMITE_SALIDAS_SOSPECHOSAS / LIMITE_SEGUNDOS_SOSPECHOSOS: a partir de cuántas
      salidas o segundos fuera se marca el examen como 🚨 en el reporte.
    - USAR_PANTALLA_COMPLETA: si es true, el sistema intenta poner el examen en
@@ -303,7 +316,7 @@ const URL_GOOGLE_SHEETS = "https://script.google.com/macros/s/AKfycbwP3hVEAqPX8G
      alumno sobre el examen, para que cualquier imagen que se filtre quede
      identificada.
 ------------------------------------------------------------------------------------- */
-const SEGUNDOS_SALIDA_SIGNIFICATIVA = 3;
+const SEGUNDOS_SALIDA_SIGNIFICATIVA = 0;
 const LIMITE_SALIDAS_SOSPECHOSAS = 3;
 const LIMITE_SEGUNDOS_SOSPECHOSOS = 60;
 const USAR_PANTALLA_COMPLETA = true;
@@ -550,30 +563,85 @@ let claveSesionActual = null;
    document.fullscreenEnabled es la forma correcta de saber si el navegador
    realmente lo soporta (en iPhone da "false"; en iPad/computadora da "true"). */
 const PANTALLA_COMPLETA_SOPORTADA = !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+
+/* Safari en versiones anteriores a la 16.4 (marzo 2023) solo entiende la
+   versión con prefijo "webkit" de la API de pantalla completa (sin ese
+   prefijo, requestFullscreen/exitFullscreen ni siquiera existen como función,
+   y llamarlos directamente lanza un error). Estas tres funciones intentan
+   primero la versión estándar y, si no existe, la versión con prefijo, para
+   que el examen funcione igual en Safari nuevo, Safari viejo, Chrome, Edge y
+   Firefox sin duplicar esa lógica en cada lugar del código. */
+function elementoEnPantallaCompleta(){
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+
+function pedirPantallaCompleta(){
+  if(!USAR_PANTALLA_COMPLETA || !PANTALLA_COMPLETA_SOPORTADA) return;
+  const elemento = document.documentElement;
+  const metodo = elemento.requestFullscreen || elemento.webkitRequestFullscreen;
+  if(!metodo) return;
+  try{
+    const resultado = metodo.call(elemento);
+    if(resultado && typeof resultado.catch === "function"){
+      resultado.catch(()=>{ /* el navegador del alumno no lo permitió; seguimos sin pantalla completa */ });
+    }
+  }catch(error){
+    /* Algunas versiones antiguas de Safari lo rechazan de forma síncrona
+       (sin devolver una promesa); simplemente seguimos sin pantalla completa. */
+  }
+}
 /* Se pone en true solo cuando confirmamos, con un evento real, que el examen
    sí llegó a estar en pantalla completa. Mientras siga en false, ignoramos
    cualquier evento de "salida" de pantalla completa porque nunca hubo una
    pantalla completa real de la cual salir. */
 let pantallaCompletaFueActivada = false;
-/* Cuando la página está en pantalla completa, el propio navegador sale de
-   pantalla completa automáticamente al mostrar un confirm()/alert() (para
-   poder dibujar el cuadro de diálogo). Eso no es que el alumno haya hecho
-   nada malo, así que cualquier código nuestro que vaya a mostrar un
-   confirm()/alert() debe poner esta bandera en true justo antes y regresarla
-   a false justo después, para que el sistema antifraude ignore esa salida
-   puntual de pantalla completa. */
+/* Dos banderas separadas para dos protecciones distintas, porque mezclarlas en
+   una sola causaba que el examen se quedara "atorado" fuera de pantalla
+   completa sin avisar (ver más abajo):
+
+   - suprimirDeteccionBlurFocus: TODO confirm()/alert() del examen la activa.
+     Evita que el propio cuadro de diálogo (que dispara blur al abrirse y focus
+     al cerrarse) se cuente a sí mismo como una salida de pestaña, lo cual
+     generaba un ciclo infinito de alertas.
+
+   - suprimirDeteccionSalidaPantallaCompleta: SOLO la activan los diálogos que
+     de verdad no deben contarse como salida de pantalla completa aunque la
+     causen (por ahora, únicamente el confirm() de "Entregar examen": ahí no
+     queremos que aparezca el bloqueo de pantalla completa justo cuando el
+     alumno ya está entregando). El alert() de "saliste de la pestaña" y el de
+     "Alt+Tab detectado" NO la activan a propósito: si mostrar esa alerta hace
+     que el navegador salga de pantalla completa (porque en ese momento el
+     examen SÍ seguía en pantalla completa), es correcto que el bloqueo de
+     pantalla completa aparezca después y le pida al alumno regresar — eso es
+     exactamente lo que se pidió: "que tengan que regresar a la pantalla
+     completa para continuar el examen". */
+let suprimirDeteccionBlurFocus = false;
 let suprimirDeteccionSalidaPantallaCompleta = false;
 
-/* Envuelve cualquier confirm()/alert() del examen con la protección de arriba,
-   para que el sistema antifraude no confunda el propio cuadro de diálogo con
-   una salida real de pantalla completa o de la ventana. */
-function conProteccionDeDialogo(funcion){
-  suprimirDeteccionSalidaPantallaCompleta = true;
+/* Envuelve cualquier confirm()/alert() del examen. Por defecto solo protege
+   contra el ciclo de blur/focus. Pasa { protegerPantallaCompleta: true } en
+   los casos donde ADEMÁS no quieres que una salida de pantalla completa
+   causada por este diálogo específico cuente como salida (ver arriba). */
+function conProteccionDeDialogo(funcion, opciones = {}){
+  const protegerPantallaCompleta = !!opciones.protegerPantallaCompleta;
+  suprimirDeteccionBlurFocus = true;
+  if(protegerPantallaCompleta) suprimirDeteccionSalidaPantallaCompleta = true;
+  let resultado;
   try{
-    return funcion();
+    resultado = funcion();
   } finally {
-    suprimirDeteccionSalidaPantallaCompleta = false;
+    // OJO: los eventos "blur"/"focus"/"fullscreenchange" que el propio
+    // confirm()/alert() dispara al abrirse y al cerrarse NO se procesan de
+    // inmediato — el navegador los deja en espera hasta que termina de
+    // ejecutarse este bloque de código. Si reactiváramos la protección aquí
+    // mismo (justo al terminar), esos eventos tardíos se procesarían YA sin
+    // protección. Por eso se espera un instante antes de reactivarla.
+    setTimeout(()=>{
+      suprimirDeteccionBlurFocus = false;
+      if(protegerPantallaCompleta) suprimirDeteccionSalidaPantallaCompleta = false;
+    }, 300);
   }
+  return resultado;
 }
 
 document.getElementById("titulo-encabezado").textContent = TITULO_EXAMEN;
@@ -582,8 +650,8 @@ document.getElementById("titulo-encabezado").textContent = TITULO_EXAMEN;
 function normalizar(txt){
   return (txt || "").toString().normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().trim().replace(/\s+/g,"_");
 }
-function claveAlumno(nombre, grupo){
-  return `examen_recta_${normalizar(grupo)}_${normalizar(nombre)}`;
+function claveAlumno(nombre, profesor, grupo){
+  return `examen_recta_${normalizar(profesor)}_${normalizar(grupo)}_${normalizar(nombre)}`;
 }
 function formatearFecha(valor){
   if(!valor) return "";
@@ -607,7 +675,7 @@ function actualizarRelojHeader(){
 setInterval(actualizarRelojHeader, 1000);
 actualizarRelojHeader();
 
-/* ---------- construir lista de grupos ---------- */
+/* ---------- construir lista de grupos y de profesores ---------- */
 (function poblarGrupos(){
   const select = document.getElementById("campo-grupo");
   Object.keys(HORARIOS_GRUPOS).forEach(grupo=>{
@@ -617,11 +685,26 @@ actualizarRelojHeader();
     select.appendChild(opcion);
   });
 })();
+(function poblarProfesores(){
+  const select = document.getElementById("campo-profesor");
+  PROFESORES.forEach(profesor=>{
+    const opcion = document.createElement("option");
+    opcion.value = profesor;
+    opcion.textContent = profesor;
+    select.appendChild(opcion);
+  });
+})();
 
 /* ---------- guardar / leer sesión en localStorage ---------- */
 function guardarSesion(){
   if(claveSesionActual && sesionActual){
-    localStorage.setItem(claveSesionActual, JSON.stringify(sesionActual));
+    try{
+      localStorage.setItem(claveSesionActual, JSON.stringify(sesionActual));
+    }catch(error){
+      // Algunos navegadores (modo privado, restricciones de almacenamiento, etc.)
+      // pueden bloquear localStorage. El examen sigue funcionando en memoria;
+      // simplemente no podría recuperar el progreso si se recarga la página.
+    }
   }
 }
 function registrarEvento(texto){
@@ -642,12 +725,12 @@ function actualizarContadorVisible(){
 }
 
 /* ---------- verificación en servidor (Google Sheets) de intentos previos ---------- */
-async function verificarEnvioPrevio(nombre, grupo){
+async function verificarEnvioPrevio(nombre, profesor, grupo){
   if(!URL_GOOGLE_SHEETS) return false;
   try{
     const controlador = new AbortController();
     const limite = setTimeout(()=>controlador.abort(), 5000);
-    const url = `${URL_GOOGLE_SHEETS}?accion=verificar&nombre=${encodeURIComponent(nombre)}&grupo=${encodeURIComponent(grupo)}`;
+    const url = `${URL_GOOGLE_SHEETS}?accion=verificar&nombre=${encodeURIComponent(nombre)}&profesor=${encodeURIComponent(profesor)}&grupo=${encodeURIComponent(grupo)}`;
     const respuesta = await fetch(url, {signal: controlador.signal});
     clearTimeout(limite);
     const datos = await respuesta.json();
@@ -668,33 +751,30 @@ function enviarAGoogleSheets(){
     return;
   }
   aviso.textContent = "Enviando tu registro a la hoja de control…";
-  try{
-    // Técnica de formulario oculto: es la forma más confiable de enviar datos a
-    // Google Apps Script desde una página sencilla, evita bloqueos de seguridad
-    // del navegador que a veces impiden que "fetch" complete el envío.
-    const iframe = document.getElementById("marco-envio-oculto");
-    const formulario = document.createElement("form");
-    formulario.method = "POST";
-    formulario.action = URL_GOOGLE_SHEETS;
-    formulario.target = "marco-envio-oculto";
-    formulario.style.display = "none";
 
-    const campo = document.createElement("input");
-    campo.type = "hidden";
-    campo.name = "payload";
-    campo.value = JSON.stringify(construirPayload());
-    formulario.appendChild(campo);
+  // Se usa fetch() con mode:"no-cors" en vez de la técnica de "formulario oculto +
+  // iframe": esa técnica anterior podía abrir una ventana en blanco o marcar error
+  // en Safari (por cómo Safari maneja los envíos de formularios hacia iframes de
+  // otro dominio). fetch() con no-cors envía el mismo tipo de datos (formulario
+  // "application/x-www-form-urlencoded", que es justo lo que el Apps Script ya
+  // espera leer en e.parameter.payload) sin abrir ninguna ventana ni iframe, y
+  // funciona igual en Safari, Chrome, Firefox y Edge.
+  const cuerpo = new URLSearchParams();
+  cuerpo.set("payload", JSON.stringify(construirPayload()));
 
-    document.body.appendChild(formulario);
-    formulario.submit();
-    setTimeout(()=>{ document.body.removeChild(formulario); }, 3000);
-
+  fetch(URL_GOOGLE_SHEETS, {
+    method: "POST",
+    mode: "no-cors", // Apps Script no agrega encabezados CORS a su respuesta normal;
+                      // con no-cors no podemos LEER la respuesta, pero el envío sí
+                      // llega y se procesa del lado de Google igual.
+    body: cuerpo
+  }).then(()=>{
     aviso.textContent = "✅ Registro enviado a la hoja de control.";
     btnReenviar.classList.add("oculto");
-  }catch(err){
+  }).catch(()=>{
     aviso.textContent = "🚨 No se pudo enviar el registro a Google Sheets. Descarga tu comprobante en PDF como respaldo y usa el botón para reintentar.";
     btnReenviar.classList.remove("oculto");
-  }
+  });
 }
 function obtenerCasosAbiertos(){
   const datos = EXAMEN;
@@ -727,6 +807,7 @@ function construirPayload(){
   const casosAbiertos = obtenerCasosAbiertos();
   const payload = {
     nombre: sesionActual.nombre,
+    profesor: sesionActual.profesor,
     grupo: sesionActual.grupo,
     horarioApertura: formatearFecha(sesionActual.horarioApertura),
     horarioCierre: formatearFecha(sesionActual.horarioCierre),
@@ -782,7 +863,7 @@ document.getElementById("btn-reiniciar").addEventListener("click", ()=>{
     return;
   }
   if(claveSesionActual){
-    localStorage.removeItem(claveSesionActual);
+    try{ localStorage.removeItem(claveSesionActual); }catch(error){ /* nada que hacer si el navegador lo bloquea */ }
   }
   errorTexto.classList.add("oculto");
   document.getElementById("form-login").reset();
@@ -797,10 +878,11 @@ document.getElementById("form-login").addEventListener("submit", async function(
   errorLogin.classList.add("oculto");
 
   const nombre = document.getElementById("campo-nombre").value.trim();
+  const profesor = document.getElementById("campo-profesor").value;
   const grupo = document.getElementById("campo-grupo").value;
 
-  if(!nombre || !grupo){
-    errorLogin.textContent = "Completa tu nombre y grupo antes de continuar.";
+  if(!nombre || !profesor || !grupo){
+    errorLogin.textContent = "Completa tu nombre, profesor y grupo antes de continuar.";
     errorLogin.classList.remove("oculto");
     return;
   }
@@ -811,7 +893,7 @@ document.getElementById("form-login").addEventListener("submit", async function(
   // el navegador la bloquea en silencio. Por eso se solicita antes de cualquier otra
   // validación, y se revierte más abajo si el alumno termina bloqueado.
   if(USAR_PANTALLA_COMPLETA && PANTALLA_COMPLETA_SOPORTADA){
-    document.documentElement.requestFullscreen().catch(()=>{ /* el navegador del alumno no lo permitió; seguimos sin pantalla completa */ });
+    pedirPantallaCompleta();
   }
 
   const horario = HORARIOS_GRUPOS[grupo];
@@ -830,11 +912,24 @@ document.getElementById("form-login").addEventListener("submit", async function(
     return;
   }
 
-  const clave = claveAlumno(nombre, grupo);
-  const guardado = localStorage.getItem(clave);
+  const clave = claveAlumno(nombre, profesor, grupo);
+  let guardado = null;
+  try{
+    guardado = localStorage.getItem(clave);
+  }catch(error){
+    guardado = null; // sin acceso a localStorage, se trata como si fuera un intento nuevo
+  }
 
+  let sesionGuardada = null;
   if(guardado){
-    const sesionGuardada = JSON.parse(guardado);
+    try{
+      sesionGuardada = JSON.parse(guardado);
+    }catch(error){
+      sesionGuardada = null; // dato corrupto o ilegible; se ignora y se trata como intento nuevo
+    }
+  }
+
+  if(sesionGuardada){
     if(sesionGuardada.estado === "completado"){
       claveSesionActual = clave;
       mostrarBloqueo("Este examen ya fue presentado con este nombre y grupo en este dispositivo. No es posible volver a presentarlo.", true);
@@ -860,7 +955,7 @@ document.getElementById("form-login").addEventListener("submit", async function(
 
   // Verificación opcional en Google Sheets por si el alumno cambió de dispositivo.
   cargando.classList.remove("oculto");
-  const yaPresentadoServidor = await verificarEnvioPrevio(nombre, grupo);
+  const yaPresentadoServidor = await verificarEnvioPrevio(nombre, profesor, grupo);
   cargando.classList.add("oculto");
   if(yaPresentadoServidor){
     claveSesionActual = clave;
@@ -871,7 +966,7 @@ document.getElementById("form-login").addEventListener("submit", async function(
 
   claveSesionActual = clave;
   sesionActual = {
-    nombre, grupo,
+    nombre, profesor, grupo,
     horarioApertura: horario.apertura,
     horarioCierre: horario.cierre,
     inicio: Date.now(),
@@ -933,9 +1028,15 @@ function obtenerOrdenOpciones(indice, pregunta){
 }
 
 function salirDePantallaCompleta(){
-  if(document.fullscreenElement){
-    document.exitFullscreen().catch(()=>{});
-  }
+  if(!elementoEnPantallaCompleta()) return;
+  const metodo = document.exitFullscreen || document.webkitExitFullscreen;
+  if(!metodo) return;
+  try{
+    const resultado = metodo.call(document);
+    if(resultado && typeof resultado.catch === "function"){
+      resultado.catch(()=>{});
+    }
+  }catch(error){ /* nada que hacer si el navegador lo rechaza */ }
 }
 
 /* ---------- render y lógica del examen ---------- */
@@ -943,7 +1044,7 @@ function iniciarInterfazExamen(reanudando){
   examenActivo = true;
   const datos = EXAMEN;
 
-  document.getElementById("info-alumno").textContent = `${sesionActual.nombre} — Grupo ${sesionActual.grupo}${reanudando ? " (intento reanudado)" : ""}`;
+  document.getElementById("info-alumno").textContent = `${sesionActual.nombre} — Prof. ${sesionActual.profesor} — Grupo ${sesionActual.grupo}${reanudando ? " (intento reanudado)" : ""}`;
   actualizarContadorVisible();
 
   const lecturaDiv = document.getElementById("lectura-contenedor");
@@ -958,7 +1059,7 @@ function iniciarInterfazExamen(reanudando){
   mostrarSoloVista("vista-examen");
 
   if(USAR_PANTALLA_COMPLETA && PANTALLA_COMPLETA_SOPORTADA){
-    document.documentElement.requestFullscreen().catch(()=>{ /* si el navegador lo impide, seguimos sin pantalla completa */ });
+    pedirPantallaCompleta();
   }
 
   const limiteTiempo = Math.min(sesionActual.inicio + DURACION_MINUTOS*60000, new Date(sesionActual.horarioCierre).getTime());
@@ -1175,16 +1276,16 @@ document.getElementById("btn-entregar").addEventListener("click", ()=>{
       `¿Quieres entregar de todas formas? Si cancelas, puedes usar el panel de números para regresar a completarlas.`;
   }
 
-  const confirmado = conProteccionDeDialogo(()=> confirm(mensaje));
+  const confirmado = conProteccionDeDialogo(()=> confirm(mensaje), { protegerPantallaCompleta: true });
 
   if(confirmado){
     entregarExamen(false);
-  } else if(USAR_PANTALLA_COMPLETA && PANTALLA_COMPLETA_SOPORTADA && !document.fullscreenElement){
+  } else if(USAR_PANTALLA_COMPLETA && PANTALLA_COMPLETA_SOPORTADA && !elementoEnPantallaCompleta()){
     // Si canceló y el cuadro de diálogo hizo que el navegador saliera de
     // pantalla completa, se la volvemos a pedir de inmediato: esto SÍ cuenta
     // como una acción directa del alumno (el clic en "Cancelar"), así que el
     // navegador lo permite sin problema.
-    document.documentElement.requestFullscreen().catch(()=>{});
+    pedirPantallaCompleta();
   }
 });
 
@@ -1245,7 +1346,7 @@ function iniciarCronometro(limiteTiempo){
    Se usa una sola bandera ("fueraDeFoco") para no contar dos veces la misma
    salida si ambas señales se disparan para el mismo evento. */
 function marcarSalioDeFoco(){
-  if(!examenActivo || fueraDeFoco || suprimirDeteccionSalidaPantallaCompleta) return;
+  if(!examenActivo || fueraDeFoco || suprimirDeteccionBlurFocus) return;
   fueraDeFoco = true;
   horaPerdioFoco = Date.now();
 }
@@ -1311,20 +1412,20 @@ document.addEventListener("keydown", (evento)=>{
 });
 
 /* ---------- sistema antifraude: salir de pantalla completa ---------- */
-document.addEventListener("fullscreenchange", ()=>{
+function manejarCambioPantallaCompleta(){
   // Esto se registra SIEMPRE, incluso si el examen aún no se marca como
   // "activo" (por ejemplo, mientras se está verificando en segundo plano que
   // el alumno no haya presentado antes desde otro dispositivo). Si no se hace
   // así, esa confirmación se pierde justo en el momento en que ocurre, y ya
   // no hay forma de saber después que sí hubo una pantalla completa real de
   // la cual el alumno pudo haber salido.
-  if(document.fullscreenElement){
+  if(elementoEnPantallaCompleta()){
     pantallaCompletaFueActivada = true;
   }
 
   if(!examenActivo) return;
 
-  if(document.fullscreenElement){
+  if(elementoEnPantallaCompleta()){
     if(horaFueraPantallaCompleta){
       const segundosFuera = Math.round((Date.now() - horaFueraPantallaCompleta)/1000);
       sesionActual.tiempoFueraTotal += segundosFuera;
@@ -1335,7 +1436,7 @@ document.addEventListener("fullscreenchange", ()=>{
     return;
   }
 
-  // document.fullscreenElement es null: ¿de verdad salió de pantalla completa,
+  // elementoEnPantallaCompleta() es null: ¿de verdad salió de pantalla completa,
   // o es un navegador (ej. Safari en iPhone) que nunca llegó a activarla y
   // solo disparó un evento fantasma? Si nunca se activó de verdad, lo ignoramos
   // por completo: no contamos una salida ni bloqueamos al alumno.
@@ -1352,11 +1453,17 @@ document.addEventListener("fullscreenchange", ()=>{
   if(USAR_PANTALLA_COMPLETA){
     document.getElementById("bloqueo-pantalla-completa").classList.remove("oculto");
   }
-});
+}
+// Se escuchan los dos nombres de evento: el estándar y el de Safari antiguo
+// con prefijo "webkit" (en navegadores modernos, solo uno de los dos llega a
+// dispararse; no hay riesgo de procesar el mismo cambio dos veces).
+document.addEventListener("fullscreenchange", manejarCambioPantallaCompleta);
+document.addEventListener("webkitfullscreenchange", manejarCambioPantallaCompleta);
+
 document.getElementById("btn-volver-pantalla-completa").addEventListener("click", ()=>{
   // Este clic SÍ cuenta como acción directa del alumno, así que el navegador
   // permite volver a pedir pantalla completa desde aquí.
-  document.documentElement.requestFullscreen().catch(()=>{});
+  pedirPantallaCompleta();
 });
 
 /* ---------- sistema antifraude: copiar / cortar / pegar ---------- */
@@ -1446,9 +1553,7 @@ function entregarExamen(autoEntregado){
   registrarEvento(autoEntregado ? "Examen entregado automáticamente (se acabó el tiempo)." : "Examen entregado por el alumno.");
   guardarSesion();
 
-  if(document.fullscreenElement){
-    document.exitFullscreen().catch(()=>{});
-  }
+  salirDePantallaCompleta();
 
   document.getElementById("texto-calificacion").textContent = `${puntosAutoObtenidos} / ${puntosAutoPosibles} pts automáticos`;
   document.getElementById("texto-detalle-resultado").innerHTML =
@@ -1527,6 +1632,7 @@ function generarComprobantePDF(){
   pdfEscribirParrafo(`Comprobante de entrega — generado el ${new Date().toLocaleString("es-MX")}`, { tamano: 9, espacioDespues: 8 });
 
   pdfEscribirParrafo(`Alumno: ${sesionActual.nombre}`, { tamano: 11, negrita: true });
+  pdfEscribirParrafo(`Profesor: ${sesionActual.profesor}`, { tamano: 11 });
   pdfEscribirParrafo(`Grupo: ${sesionActual.grupo}`, { tamano: 11 });
   pdfEscribirParrafo(`Hora de inicio: ${formatearFecha(sesionActual.inicio)}`, { tamano: 10 });
   pdfEscribirParrafo(`Hora de entrega: ${formatearFecha(sesionActual.horaEntrega)}`, { tamano: 10 });
